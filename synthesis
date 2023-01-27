@@ -1,19 +1,138 @@
 #!/usr/bin/env python
 
 import sys
+import json
 import argparse
 import numpy as np
 import pandas as pd
 
 import tensorflow as tf
-
 import tensorflow.compat.v1.keras.backend as K
+
+#hack
 tf.compat.v1.disable_eager_execution()
 
 
-def run_train(args):
-    print("do stuff")
+#some global variables....
+z_mean_encoded = None
+z_log_var_encoded = None
+beta = None
 
+class CustomVariationalLayer(tf.keras.layers.Layer):
+    """
+    Define a custom layer
+    """
+    def __init__(self, original_dim, **kwargs):
+        self.is_placeholder = True
+        self.original_dim = original_dim
+        super(CustomVariationalLayer, self).__init__(**kwargs)
+
+    def vae_loss(self, x_input, x_decoded):
+        reconstruction_loss = self.original_dim * tf.keras.metrics.binary_crossentropy(x_input, x_decoded)
+        kl_loss = - 0.5 * K.sum(1 + z_log_var_encoded - K.square(z_mean_encoded) - 
+                                K.exp(z_log_var_encoded), axis=-1)
+        return K.mean(reconstruction_loss + (K.get_value(beta) * kl_loss))
+
+    def call(self, inputs):
+        x = inputs[0]
+        x_decoded = inputs[1]
+        loss = self.vae_loss(x, x_decoded)
+        self.add_loss(loss, inputs=inputs)
+        return x
+
+
+class WarmUpCallback(tf.keras.callbacks.Callback):
+    def __init__(self, beta, kappa):
+        self.beta = beta
+        self.kappa = kappa
+
+    def on_epoch_end(self, epoch, logs={}):
+        if K.get_value(self.beta) <= 1:
+            K.set_value(self.beta, K.get_value(self.beta) + self.kappa)
+
+def compute_latent(x):
+    mu, sigma = x
+    batch = K.shape(mu)[0]
+    dim = K.shape(mu)[1]
+    eps = K.random_normal(shape=(batch,dim), mean=0., stddev=1.0 )
+    return mu + K.exp(sigma/2)*eps
+
+def run_train(args):
+    global z_mean_encoded
+    global z_log_var_encoded
+    global beta
+
+    df = None
+    for y in args.inputs:
+        x = pd.read_csv(y, sep="\t", index_col=0)
+        if df is None:
+            df = x
+        else:
+            df = pd.concat([df, x])
+
+    features = list( i for i in df.columns if i not in args.exclude )
+    feature_dim = len(features)
+
+    train_matrix = df[features]
+
+    latent_dim = args.latent_dim
+    learning_rate = args.learning_rate
+
+
+
+    encoder_inputs = tf.keras.Input(shape=(feature_dim,))
+    z_mean_dense_linear = tf.keras.layers.Dense(
+        latent_dim, kernel_initializer='glorot_uniform', name="encoder_1")(encoder_inputs)
+    z_mean_dense_batchnorm = tf.keras.layers.BatchNormalization()(z_mean_dense_linear)
+    z_mean_encoded = tf.keras.layers.Activation('relu')(z_mean_dense_batchnorm)
+
+    z_log_var_dense_linear = tf.keras.layers.Dense(
+        latent_dim, kernel_initializer='glorot_uniform', name="encoder_2")(encoder_inputs)
+    z_log_var_dense_batchnorm = tf.keras.layers.BatchNormalization()(z_log_var_dense_linear)
+    z_log_var_encoded = tf.keras.layers.Activation('relu')(z_log_var_dense_batchnorm)
+
+    latent_space = tf.keras.layers.Lambda(
+        compute_latent, output_shape=(
+            latent_dim,), name="latent_space")([z_mean_encoded, z_log_var_encoded])
+
+    decoder_to_reconstruct = tf.keras.layers.Dense(
+        feature_dim, kernel_initializer='glorot_uniform', activation='sigmoid')
+    decoder_outputs = decoder_to_reconstruct(latent_space)
+
+
+    kappa = 1
+    beta = K.variable(0)
+
+    adam = tf.keras.optimizers.Adam(learning_rate=learning_rate)
+    vae_layer = CustomVariationalLayer(feature_dim)([encoder_inputs, decoder_outputs])
+    vae = tf.keras.models.Model(encoder_inputs, vae_layer)
+    vae.compile(optimizer=adam, loss=None, loss_weights=[beta])
+
+    pre_train_epochs = args.epochs
+    batch_size = args.batch_size
+
+    history = vae.fit(train_matrix,
+                epochs=pre_train_epochs,
+                batch_size=batch_size,
+                shuffle=True,
+                callbacks=[WarmUpCallback(beta, kappa)],
+                #verbose=0
+    )
+               
+    # Model to compress input
+    encoder = tf.keras.models.Model(encoder_inputs, z_mean_encoded)
+
+    decoder_input = tf.keras.Input(shape=(latent_dim, ))  # can generate from any sampled z vector
+    _x_decoded_mean = decoder_to_reconstruct(decoder_input)
+    decoder = tf.keras.models.Model(decoder_input, _x_decoded_mean)
+
+    with open(args.out + ".info", "tw") as handle:
+        handle.write(json.dumps({
+            "features" : features
+        }))
+
+    encoder.save(args.out + ".encoder")
+    decoder.save(args.out + ".decoder")
 
 
 def run_gen(args):
@@ -28,6 +147,14 @@ if __name__ == "__main__":
     subparsers = parser.add_subparsers(title="subcommand")
 
     train_parser = subparsers.add_parser('train')
+    train_parser.add_argument("inputs", nargs="+")
+    train_parser.add_argument("--latent-dim", type=int, default=50)
+    train_parser.add_argument("--learning-rate", type=float, default=0.0005)
+    train_parser.add_argument("--batch-size", type=int, default=50)
+    train_parser.add_argument("--epochs", type=int, default=4)
+    train_parser.add_argument("-e", "--exclude", nargs="*", default=[])
+    train_parser.add_argument("-o", "--out", default="model")
+    
     train_parser.set_defaults(func=run_train)
 
     train_parser = subparsers.add_parser('gen')
