@@ -1,2 +1,3 @@
 numpy
 pandas
+tensorflow-macos==2.10

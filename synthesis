@@ -5,6 +5,8 @@ import json
 import argparse
 import numpy as np
 import pandas as pd
+import keras
+import os
 
 import tensorflow as tf
 import tensorflow.compat.v1.keras.backend as K
@@ -130,13 +132,90 @@ def run_train(args):
         handle.write(json.dumps({
             "features" : features
         }))
-
+            
     encoder.save(args.out + ".encoder")
     decoder.save(args.out + ".decoder")
 
+ 
+    
+def synth_latent_3(args,latent_object, synth_index_name):
+    synth_in_count = 3
+    synth_ndx_strt = 0
+    synth_full_frame = pd.DataFrame(columns = latent_object.columns)
 
+    for subtype in sorted(latent_object.Labels.unique()):  # here is the latent object in memory, from ONLY the trn object
+        print(subtype)
+        sub = latent_object[latent_object.Labels == subtype]
+        #print(args.num_sample_gen)
+        synth_index = ['SYNTH-' + synth_index_name + '-' + jtem for jtem in [str(
+            item).zfill(5) for item in list(range(synth_ndx_strt,
+                                                  args.num_sample_gen + synth_ndx_strt))]]
+        synth_sub_frame = pd.DataFrame(index = synth_index)
+        synth_sub_frame.insert(0, 'Labels', sub.Labels[0])
+
+        synth_dict = {}
+        for synth_sample in synth_sub_frame.index:
+            input_sample_set = sub.sample(synth_in_count)
+            new_samp_vec = []
+            for col in input_sample_set.iloc[:, 1:]:
+                vals_inpt = input_sample_set.loc[:, col] # latent feature VALUES (not validation)
+                choosen_val = vals_inpt.sample(1)
+                new_samp_vec.append(choosen_val.values[0])
+
+            synth_dict[synth_sample] = new_samp_vec
+        synth_sub_frame = pd.concat([synth_sub_frame, pd.DataFrame(synth_dict).T], axis = 1)
+
+        synth_full_frame = pd.concat(
+            [synth_full_frame, synth_sub_frame], axis = 0) 
+
+        synth_ndx_strt = synth_ndx_strt + args.num_sample_gen
+    print('Synthetic from latent function done, '+str(args.num_sample_gen)+' samples generated for each subtype')
+    return(synth_full_frame)
+
+
+#./synthesis gen data/BRCA.tsv --num-sample-gen 250 
 def run_gen(args):
-    print("do stuff")
+    #load models
+    decoder = keras.models.load_model(args.decoder + ".decoder")
+    encoder = keras.models.load_model(args.encoder + ".encoder")
+    train_size =args.train_size
+
+    #for each input tsv generate synthetic data
+    for elem in args.inputs:
+        #print("VLAUE OF ARGS",args.inputs[args.inputs.index(elem)])
+
+        input = pd.read_csv(args.inputs[args.inputs.index(elem)],sep='\t',index_col = 0)
+        train_sample = input.sample(train_size)
+        Labels = input["Labels"]
+
+        decoded = pd.DataFrame(decoder.predict(encoder.predict(input.iloc[:, 1:])),
+                                index = input.index, columns = input.iloc[:, 1:].columns)
+
+        latent_object = pd.DataFrame(encoder.predict(input.iloc[:, 1:]),
+                        index=input.index)
+        
+        latent_object.index.name = train_sample.index.name
+
+        latent_object = pd.concat( [pd.DataFrame(Labels), latent_object] , axis =1)
+        decoded_labeled = pd.concat( [pd.DataFrame(Labels), decoded] , axis =1)
+
+        synth_full_frame = synth_latent_3(args,latent_object, input.index.name)
+
+        synth_lat_dec = pd.concat([synth_full_frame.iloc[:, 0],
+                        pd.DataFrame(decoder.predict(synth_full_frame.iloc[:, 1:]),
+                                        index = synth_full_frame.index)], axis = 1)
+        
+        synth_lat_dec.columns = train_sample.columns
+
+        #  args.inputs[args.inputs.index(elem)] this would save in the same directory as the input tsv
+        #optional file path location to store models 
+
+        synth_lat_dec.to_csv(args.out + input.index.name  +  '_synthetic_data.tsv', sep = '\t')
+        print(args.out + input.index.name  +  '_synthetic_data.tsv Generated')
+
+        decoded_labeled.to_csv(args.out + input.index.name  + '_decoded_labeled.tsv', sep = '\t')
+        print(args.out+ input.index.name  +  '_decoded_labeled.tsv Generated')
+
 
 
 if __name__ == "__main__":
@@ -147,6 +226,8 @@ if __name__ == "__main__":
     subparsers = parser.add_subparsers(title="subcommand")
 
     train_parser = subparsers.add_parser('train')
+    train_parser.set_defaults(func=run_train)
+
     train_parser.add_argument("inputs", nargs="+")
     train_parser.add_argument("--latent-dim", type=int, default=50)
     train_parser.add_argument("--learning-rate", type=float, default=0.0005)
@@ -155,10 +236,15 @@ if __name__ == "__main__":
     train_parser.add_argument("-e", "--exclude", nargs="*", default=[])
     train_parser.add_argument("-o", "--out", default="model")
     
-    train_parser.set_defaults(func=run_train)
-
     train_parser = subparsers.add_parser('gen')
     train_parser.set_defaults(func=run_gen)
+
+    train_parser.add_argument("inputs", nargs="+")
+    train_parser.add_argument("-enc", "--encoder", default="model")
+    train_parser.add_argument("-dec", "--decoder", default="model")
+    train_parser.add_argument("-tsize","--train-size",type=int, default=40)
+    train_parser.add_argument("-ngen","--num-sample-gen",type=int, default=200)
+    train_parser.add_argument("-o", "--out", default="gen")
 
 
     args = parser.parse_args()
