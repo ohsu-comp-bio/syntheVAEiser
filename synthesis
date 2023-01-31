@@ -14,7 +14,7 @@ import tensorflow.compat.v1.keras.backend as K
 #hack
 tf.compat.v1.disable_eager_execution()
 
-
+# Zena + sea bio portal 
 #some global variables....
 z_mean_encoded = None
 z_log_var_encoded = None
@@ -56,7 +56,7 @@ def compute_latent(x):
     mu, sigma = x
     batch = K.shape(mu)[0]
     dim = K.shape(mu)[1]
-    eps = K.random_normal(shape=(batch,dim), mean=0., stddev=1.0 )
+    eps = K.random_normal(shape=(batch, dim), mean=0., stddev=1.0 )
     return mu + K.exp(sigma/2)*eps
 
 def run_train(args):
@@ -79,8 +79,6 @@ def run_train(args):
 
     latent_dim = args.latent_dim
     learning_rate = args.learning_rate
-
-
 
     encoder_inputs = tf.keras.Input(shape=(feature_dim,))
     z_mean_dense_linear = tf.keras.layers.Dense(
@@ -137,8 +135,8 @@ def run_train(args):
     decoder.save(args.out + ".decoder")
 
  
-    
 def synth_latent_3(args,latent_object, synth_index_name):
+    # optional argument default 2
     synth_in_count = 3
     synth_ndx_strt = 0
     synth_full_frame = pd.DataFrame(columns = latent_object.columns)
@@ -178,14 +176,14 @@ def run_gen(args):
     #load models
     decoder = keras.models.load_model(args.decoder + ".decoder")
     encoder = keras.models.load_model(args.encoder + ".encoder")
-    train_size =args.train_size
 
     #for each input tsv generate synthetic data
     for elem in args.inputs:
         #print("VLAUE OF ARGS",args.inputs[args.inputs.index(elem)])
 
         input = pd.read_csv(args.inputs[args.inputs.index(elem)],sep='\t',index_col = 0)
-        train_sample = input.sample(train_size)
+        # argument for label column name. --label 
+        # another argument seperate file for finding column for seperate labels? optional argumenet
         Labels = input["Labels"]
 
         decoded = pd.DataFrame(decoder.predict(encoder.predict(input.iloc[:, 1:])),
@@ -194,7 +192,7 @@ def run_gen(args):
         latent_object = pd.DataFrame(encoder.predict(input.iloc[:, 1:]),
                         index=input.index)
         
-        latent_object.index.name = train_sample.index.name
+        latent_object.index.name = input.index.name
 
         latent_object = pd.concat( [pd.DataFrame(Labels), latent_object] , axis =1)
         decoded_labeled = pd.concat( [pd.DataFrame(Labels), decoded] , axis =1)
@@ -205,7 +203,7 @@ def run_gen(args):
                         pd.DataFrame(decoder.predict(synth_full_frame.iloc[:, 1:]),
                                         index = synth_full_frame.index)], axis = 1)
         
-        synth_lat_dec.columns = train_sample.columns
+        synth_lat_dec.columns = input.columns
 
         #  args.inputs[args.inputs.index(elem)] this would save in the same directory as the input tsv
         #optional file path location to store models 
@@ -213,6 +211,8 @@ def run_gen(args):
         synth_lat_dec.to_csv(args.out + input.index.name  +  '_synthetic_data.tsv', sep = '\t')
         print(args.out + input.index.name  +  '_synthetic_data.tsv Generated')
 
+
+        #seperate function "recoded" below:
         decoded_labeled.to_csv(args.out + input.index.name  + '_decoded_labeled.tsv', sep = '\t')
         print(args.out+ input.index.name  +  '_decoded_labeled.tsv Generated')
 
@@ -236,13 +236,23 @@ if __name__ == "__main__":
     train_parser.add_argument("-e", "--exclude", nargs="*", default=[])
     train_parser.add_argument("-o", "--out", default="model")
     
+    # NEW ARGUMENT grouping train_fine_tune
+    # given model + tsv generate new models
+     
     train_parser = subparsers.add_parser('gen')
     train_parser.set_defaults(func=run_gen)
 
     train_parser.add_argument("inputs", nargs="+")
     train_parser.add_argument("-enc", "--encoder", default="model")
     train_parser.add_argument("-dec", "--decoder", default="model")
-    train_parser.add_argument("-tsize","--train-size",type=int, default=40)
+
+    # Optional Arguments:
+    # A) Label = int pairs
+    # B) coeficient multiplieir 
+    # C) total number / subtypes ->> Default choice 
+
+    #Transpose argument -- transpose the whole matrix to match the format needed
+
     train_parser.add_argument("-ngen","--num-sample-gen",type=int, default=200)
     train_parser.add_argument("-o", "--out", default="gen")
 
