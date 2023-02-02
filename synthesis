@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 import keras
 import os
+import json
 
 import tensorflow as tf
 import tensorflow.compat.v1.keras.backend as K
@@ -16,6 +17,9 @@ tf.compat.v1.disable_eager_execution()
 
 # Zena + sea bio portal 
 #some global variables....
+# TODO: integrate data preprocessing commands/args to parse sea bio portal / zena file formats
+# Transpose argument -- transpose the whole matrix to match the format needed
+
 z_mean_encoded = None
 z_log_var_encoded = None
 beta = None
@@ -135,25 +139,59 @@ def run_train(args):
     decoder.save(args.out + ".decoder")
 
  
+    #------------------------------------------------------------------------------------------
+    # NEW ARGUMENT grouping train_fine_tune
+    # given model + tsv generate new models
+    #_-----------------------------------------------------------------------------------------
+
+
+
 def synth_latent_3(args,latent_object, synth_index_name):
-    # optional argument default 2
-    synth_in_count = 3
     synth_ndx_strt = 0
     synth_full_frame = pd.DataFrame(columns = latent_object.columns)
 
+    # Optional Arguments:
+    # A) Label = int pairs
+    # B) coeficient multiplieir 
+    # C) total number / subtypes ->> Default choice 
+
+    if (v := args.num_gen_label) is not None or \
+           (v := args.num_gen_factor) is not None or \
+           (v := args.num_gen_total_div_subtypes) is not None:
+            num_gen = v
+    else:
+        args.num_gen_total_div_subtypes = len(latent_object) / len(latent_object.Labels.unique())
+
+    # ./synthesis gen data/BRCA.tsv --num-gen-label '{"BRCA_1": 50, "BRCA_2": 100, "BRCA_3": 200, "BRCA_4": 300}'
+    Truth_Mux = [(v := args.num_gen_label) is not None, (v := args.num_gen_factor) is not None, (v := args.num_gen_total_div_subtypes) is not False] 
+    if Truth_Mux[0]==True:
+        json_obj =json.loads(args.num_gen_label)
+
+        assert(len(json_obj.keys()) == len(latent_object.Labels.unique())), f"subtype count mismatch. given \
+        {len(json_obj.keys())} argument labels, expected {len(latent_object.Labels.unique())} labels from provided TSV"
+        num_gen = pd.Series(json_obj)
+
+    elif Truth_Mux[1]==True:
+        num_gen = args.num_gen_factor * latent_object.Labels.value_counts()
+    else:
+        num_gen= latent_object.Labels.value_counts()
+
     for subtype in sorted(latent_object.Labels.unique()):  # here is the latent object in memory, from ONLY the trn object
+          
         print(subtype)
+        assert(num_gen[subtype]),"Labels given don't match labels in the TSV file."
         sub = latent_object[latent_object.Labels == subtype]
-        #print(args.num_sample_gen)
+
         synth_index = ['SYNTH-' + synth_index_name + '-' + jtem for jtem in [str(
             item).zfill(5) for item in list(range(synth_ndx_strt,
-                                                  args.num_sample_gen + synth_ndx_strt))]]
+                                                  num_gen[subtype] + synth_ndx_strt))]]
         synth_sub_frame = pd.DataFrame(index = synth_index)
+
         synth_sub_frame.insert(0, 'Labels', sub.Labels[0])
 
         synth_dict = {}
         for synth_sample in synth_sub_frame.index:
-            input_sample_set = sub.sample(synth_in_count)
+            input_sample_set = sub.sample(args.num_synth_in)
             new_samp_vec = []
             for col in input_sample_set.iloc[:, 1:]:
                 vals_inpt = input_sample_set.loc[:, col] # latent feature VALUES (not validation)
@@ -166,37 +204,53 @@ def synth_latent_3(args,latent_object, synth_index_name):
         synth_full_frame = pd.concat(
             [synth_full_frame, synth_sub_frame], axis = 0) 
 
-        synth_ndx_strt = synth_ndx_strt + args.num_sample_gen
-    print('Synthetic from latent function done, '+str(args.num_sample_gen)+' samples generated for each subtype')
+        synth_ndx_strt = synth_ndx_strt + num_gen[subtype]
+    print('Synthetic from latent function done, '+str(sum(num_gen))+' new samples generated')
     return(synth_full_frame)
 
+def run_gen_decoded(args):
 
-#./synthesis gen data/BRCA.tsv --num-sample-gen 250 
-def run_gen(args):
+    decoder = keras.models.load_model(args.decoder + ".decoder")
+    encoder = keras.models.load_model(args.encoder + ".encoder")
+
+    #for each input tsv generate synthetic data
+    for elem in args.inputs:
+
+        input = pd.read_csv(args.inputs[args.inputs.index(elem)],sep='\t',index_col = 0)
+        # another argument seperate file for finding column for seperate labels? optional argumenet
+        if args.external_labels:
+            Labels= pd.read_csv(args.external_labels)
+            # TODO what is the column name from prepared data, what does prepared data look like ? 
+        else:
+            Labels = input[args.column_label_name]
+
+        decoded = pd.DataFrame(decoder.predict(encoder.predict(input.iloc[:, 1:])),
+                                index = input.index, columns = input.iloc[:, 1:].columns)
+
+        decoded_labeled = pd.concat( [pd.DataFrame(Labels), decoded] , axis =1)
+        decoded_labeled.to_csv(args.out + input.index.name  + '_decoded_labeled.tsv', sep = '\t')
+        print(args.out+ input.index.name  +  '_decoded_labeled.tsv Generated')
+
+def run_gen_synth(args):
     #load models
     decoder = keras.models.load_model(args.decoder + ".decoder")
     encoder = keras.models.load_model(args.encoder + ".encoder")
 
     #for each input tsv generate synthetic data
     for elem in args.inputs:
-        #print("VLAUE OF ARGS",args.inputs[args.inputs.index(elem)])
-
         input = pd.read_csv(args.inputs[args.inputs.index(elem)],sep='\t',index_col = 0)
-        # argument for label column name. --label 
         # another argument seperate file for finding column for seperate labels? optional argumenet
-        Labels = input["Labels"]
-
-        decoded = pd.DataFrame(decoder.predict(encoder.predict(input.iloc[:, 1:])),
-                                index = input.index, columns = input.iloc[:, 1:].columns)
+        if args.external_labels:
+            Labels= pd.read_csv(args.external_labels)
+            # TODO what is the column name from prepared data, what does prepared data look like ? 
+        else:
+            Labels = input[args.column_label_name]
 
         latent_object = pd.DataFrame(encoder.predict(input.iloc[:, 1:]),
                         index=input.index)
         
         latent_object.index.name = input.index.name
-
         latent_object = pd.concat( [pd.DataFrame(Labels), latent_object] , axis =1)
-        decoded_labeled = pd.concat( [pd.DataFrame(Labels), decoded] , axis =1)
-
         synth_full_frame = synth_latent_3(args,latent_object, input.index.name)
 
         synth_lat_dec = pd.concat([synth_full_frame.iloc[:, 0],
@@ -204,19 +258,8 @@ def run_gen(args):
                                         index = synth_full_frame.index)], axis = 1)
         
         synth_lat_dec.columns = input.columns
-
-        #  args.inputs[args.inputs.index(elem)] this would save in the same directory as the input tsv
-        #optional file path location to store models 
-
         synth_lat_dec.to_csv(args.out + input.index.name  +  '_synthetic_data.tsv', sep = '\t')
         print(args.out + input.index.name  +  '_synthetic_data.tsv Generated')
-
-
-        #seperate function "recoded" below:
-        decoded_labeled.to_csv(args.out + input.index.name  + '_decoded_labeled.tsv', sep = '\t')
-        print(args.out+ input.index.name  +  '_decoded_labeled.tsv Generated')
-
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
@@ -225,6 +268,9 @@ if __name__ == "__main__":
     
     subparsers = parser.add_subparsers(title="subcommand")
 
+    """
+    Train, build models from input tsv files and save them to disk
+    """
     train_parser = subparsers.add_parser('train')
     train_parser.set_defaults(func=run_train)
 
@@ -234,28 +280,47 @@ if __name__ == "__main__":
     train_parser.add_argument("--batch-size", type=int, default=50)
     train_parser.add_argument("--epochs", type=int, default=4)
     train_parser.add_argument("-e", "--exclude", nargs="*", default=[])
-    train_parser.add_argument("-o", "--out", default="model")
+    train_parser.add_argument("-o", "--out", default="model", required=True)
     
-    # NEW ARGUMENT grouping train_fine_tune
-    # given model + tsv generate new models
-     
+    """ 
+    Generate synthetic TSV data from specified encoder/decoders and input TSV
+    full example command: ./synthesis gen data/BRCA.tsv --num-gen-label '{"BRCA_1": 50, "BRCA_3": 100, "BRCA_4": 200, "BRCA_2": 300}' --num-synth-in 3
+    """
     train_parser = subparsers.add_parser('gen')
-    train_parser.set_defaults(func=run_gen)
+    train_parser.set_defaults(func=run_gen_synth)
 
+    #basic required args
     train_parser.add_argument("inputs", nargs="+")
     train_parser.add_argument("-enc", "--encoder", default="model")
     train_parser.add_argument("-dec", "--decoder", default="model")
-
-    # Optional Arguments:
-    # A) Label = int pairs
-    # B) coeficient multiplieir 
-    # C) total number / subtypes ->> Default choice 
-
-    #Transpose argument -- transpose the whole matrix to match the format needed
-
-    train_parser.add_argument("-ngen","--num-sample-gen",type=int, default=200)
     train_parser.add_argument("-o", "--out", default="gen")
 
+    # must choose one of these three options 
+    group = train_parser.add_mutually_exclusive_group()
+    group.add_argument("-gen-label","--num-gen-label", help="""example query format --num-gen-label '{"BRCA_1": 50, "BRCA_2": 100, "BRCA_3": 200, "BRCA_4": 300}'""")
+    group.add_argument("-gen-factor","--num-gen-factor",type=int)
+    group.add_argument("-gen-total","--num-gen-total-div-subtypes",action='store_true')
+
+    # optional args
+    train_parser.add_argument("-nsin","--num-synth-in",type=int, default=2)
+    train_parser.add_argument("-label","--column-label-name",default="Labels")
+    train_parser.add_argument("-exLabels","--external-labels")
+
+    """ 
+    Generate Decoded tsv from specified encoder/decoders and input TSV
+    example command: ./synthesis gen_decoded data/BRCA.tsv -o decoded.tsv
+    """
+    train_parser = subparsers.add_parser('gen_decoded')
+    train_parser.set_defaults(func=run_gen_decoded)
+
+    #basic required args
+    train_parser.add_argument("inputs", nargs="+")
+    train_parser.add_argument("-enc", "--encoder", default="model")
+    train_parser.add_argument("-dec", "--decoder", default="model")
+    train_parser.add_argument("-o", "--out", default="gen")
+
+    train_parser.add_argument("-label","--column-label-name",default="Labels")
+    train_parser.add_argument("-exLabels","--external-labels")
 
     args = parser.parse_args()
 
