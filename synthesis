@@ -8,9 +8,16 @@ import pandas as pd
 import keras
 import os
 import json
+import time
+import gzip
+import re
+import numpy
+
 
 import tensorflow as tf
 import tensorflow.compat.v1.keras.backend as K
+from tensorflow.keras import optimizers
+
 
 #hack
 tf.compat.v1.disable_eager_execution()
@@ -56,12 +63,93 @@ class WarmUpCallback(tf.keras.callbacks.Callback):
         if K.get_value(self.beta) <= 1:
             K.set_value(self.beta, K.get_value(self.beta) + self.kappa)
 
+
+def preprocess(args):
+    start = time.time()
+    label = args.label_col
+    samples_with_p50_labels = pd.read_csv(args.label_file,sep = '\t', index_col = 0)
+    samples_with_p50_labels = samples_with_p50_labels[label] #could be problematic
+    samples_with_p50_labels = samples_with_p50_labels[~samples_with_p50_labels.index.duplicated(keep='first')]
+    syn_lst = list(samples_with_p50_labels.index) # Samples designated for synthesis
+
+    for input in args.inputs:
+        file_read_start = time.time()
+        main_frame = pd.read_csv(input, header=0, sep='\t', index_col =0)
+       
+        if args.transpose:
+            print(f"Transposing input GZ {input}")
+            main_frame  = main_frame.T
+
+        print(f"total time to read {input} is {time.time() - file_read_start}")
+        print("SHAPE OF MAIN FRAME",main_frame.shape)
+        
+        try:
+            main_frame.loc[syn_lst, :]
+
+        except KeyError as e:
+            error = str(e).split(']')[0].split('[')[-1]
+            new = error.replace(r'\n','').replace(r'       ','').replace(r' ','').replace(r"'",'')
+            new = new.split(',')
+            for elem in new:
+                syn_lst.remove(elem)
+        
+        X_synth = main_frame.loc[syn_lst]
+        p50_label_gexp_map = samples_with_p50_labels.loc[syn_lst]
+        synth_labeled = pd.concat([p50_label_gexp_map, X_synth], axis = 1)
+        synth_labeled.rename(columns={'PAM50': "Labels"}, inplace = True)
+        print("VALUE OF SYN_LIST ",syn_lst)
+        print("LEN OF SYN_LIST ",len(syn_lst))
+        train_frame = main_frame.loc[~main_frame.index.isin(syn_lst)]
+        print("TRAIN FRAME VALUE ",train_frame)
+        print("SHAPE OF TRAIN FRAME ",train_frame.shape)
+        train_frame.insert(0, 'Labels', 'x_n')
+        stack = pd.concat([train_frame, synth_labeled], axis = 0)
+        print("SHAPE OF STACK",stack.shape)
+        k = 5
+
+
+        for columnName, columnData in stack.items():
+            if columnData.values.dtype != object:
+                unique, counts = numpy.unique(columnData.values, return_counts=True)
+                counts_dict = dict(zip(unique, counts))
+                print("VALUE OF COUNTS DICT ", counts_dict)
+            
+                
+        features = stack[1:].mad().sort_values(ascending=False)[:5000].index
+        #features = (stack.iloc[:, 1:] - stack.iloc[:, 1:].mean()).abs().mean().sort_values(ascending=False)[:500].index
+        stack_5k = pd.concat([stack.Labels, stack.loc[:, features]], axis = 1)
+        print("STACK 5k SHAPE",stack_5k.shape)
+        train_5k = stack_5k.loc[~stack_5k.index.isin(syn_lst)]
+        print("TRAIN 5k SHAPE ",train_5k.shape)
+        synth_5k = stack_5k.loc[stack_5k.index.isin(syn_lst)]
+        print("SYNTH 5k SHAPE ",synth_5k.shape)
+        train_max_col_vals = train_5k.iloc[:, 1:].max()
+        print("Train_max_col_vals VALUE: ",train_max_col_vals)
+        print("TRIAN 5k ILOC ",train_5k.iloc[:, 1:])
+        X_train = (train_5k.iloc[:, 1:] / train_max_col_vals)
+        print("train_5k.Labels",train_5k.Labels)
+        print("train_5k.LabelsShape",train_5k.Labels.shape)
+        print("X_train",X_train)
+        print("X_trainShape",X_train.shape)
+        X_train_labeled = pd.concat([train_5k.Labels, X_train], axis = 1)
+        X_train_labeled.to_csv(args.out_data, sep = '\t')
+        synth_max_col_vals = synth_5k.iloc[:, 1:].max()
+        X_synth = (synth_5k.iloc[:, 1:] / synth_max_col_vals)
+        X_synth_labeled = pd.concat([synth_5k.Labels, X_synth], axis = 1)
+        X_synth_labeled.to_csv(args.out_labels, sep = '\t')
+        print(f"FINISHED IN {time.time() - start} SECONDS")
+        
+    
+ 
+
+
 def compute_latent(x):
     mu, sigma = x
     batch = K.shape(mu)[0]
     dim = K.shape(mu)[1]
     eps = K.random_normal(shape=(batch, dim), mean=0., stddev=1.0 )
     return mu + K.exp(sigma/2)*eps
+
 
 def run_train(args):
     global z_mean_encoded
@@ -103,18 +191,19 @@ def run_train(args):
         feature_dim, kernel_initializer='glorot_uniform', activation='sigmoid')
     decoder_outputs = decoder_to_reconstruct(latent_space)
 
-
     kappa = 1
     beta = K.variable(0)
 
     adam = tf.keras.optimizers.Adam(learning_rate=learning_rate)
     vae_layer = CustomVariationalLayer(feature_dim)([encoder_inputs, decoder_outputs])
     vae = tf.keras.models.Model(encoder_inputs, vae_layer)
+
     vae.compile(optimizer=adam, loss=None, loss_weights=[beta])
 
     pre_train_epochs = args.epochs
     batch_size = args.batch_size
 
+    print("THE VALUE OF TRAIN MATRIX ",train_matrix)
     history = vae.fit(train_matrix,
                 epochs=pre_train_epochs,
                 batch_size=batch_size,
@@ -122,6 +211,7 @@ def run_train(args):
                 callbacks=[WarmUpCallback(beta, kappa)],
                 #verbose=0
     )
+    vae.save_weights("vae")
                
     # Model to compress input
     encoder = tf.keras.models.Model(encoder_inputs, z_mean_encoded)
@@ -134,9 +224,21 @@ def run_train(args):
         handle.write(json.dumps({
             "features" : features
         }))
+
+
+    print("TRAIN MATRIX ",train_matrix)
+
+    decoded = pd.DataFrame(decoder.predict(encoder.predict(train_matrix)),
+                                index = train_matrix.index, columns = train_matrix.columns)
+
+    print("DECODED",decoded)
+
             
     encoder.save(args.out + ".encoder")
     decoder.save(args.out + ".decoder")
+
+    #vae_save = tf.keras.models.Model(encoder_inputs, vae_layer)
+    #vae_save.save(args.out+ ".vae")
 
  
     #------------------------------------------------------------------------------------------
@@ -145,15 +247,65 @@ def run_train(args):
     #_-----------------------------------------------------------------------------------------
 
 
+def train_fine_tune(args):
+    global z_mean_encoded
+    global z_log_var_encoded
+    global beta
+
+    df = pd.read_csv(args.inputs, sep="\t", index_col=0)
+    features = list( i for i in df.columns if i not in args.exclude )
+    train_matrix = df[features]
+    adam = optimizers.Adam(learning_rate=args.learning_rate)
+    features = list( i for i in df.columns if i not in args.exclude )
+    feature_dim = len(features)
+    encoder_inputs = tf.keras.Input(shape=(feature_dim,))
+
+    latent_dim = args.latent_dim
+    latent_space = tf.keras.layers.Lambda(
+        compute_latent, output_shape=(
+            latent_dim,), name="latent_space")([z_mean_encoded, z_log_var_encoded])
+
+    decoder_to_reconstruct = tf.keras.layers.Dense(
+        feature_dim, kernel_initializer='glorot_uniform', activation='sigmoid')
+    decoder_outputs = decoder_to_reconstruct(latent_space)
+
+
+    vae_layer = CustomVariationalLayer(feature_dim)([encoder_inputs, decoder_outputs])
+    vae = tf.keras.models.Model(encoder_inputs, vae_layer)
+
+    vae.compile(optimizer=adam, loss=None, loss_weights=[beta])
+
+
+    vaes = keras.models.load_weights("vae")
+    pre_train_epochs = args.epochs
+    batch_size = args.batch_size
+    kappa = 1
+
+    vaes.compile(optimizer=adam, loss=None, loss_weights=[beta])
+
+    vae_fine_tune = vaes.fit(train_matrix,
+                epochs=pre_train_epochs,
+                batch_size=batch_size,
+                shuffle=True,
+                callbacks=[WarmUpCallback(beta, kappa)],
+                #verbose=0
+    )
+    vae_fine_tune.save()
+
+
 
 def synth_latent_3(args,latent_object, synth_index_name):
+    if synth_index_name is None:
+        synth_index_name = "sythn"
     synth_ndx_strt = 0
     synth_full_frame = pd.DataFrame(columns = latent_object.columns)
 
     # Optional Arguments:
     # A) Label = int pairs
     # B) coeficient multiplieir 
-    # C) total number / subtypes ->> Default choice 
+    # C) total number / subtypes ->> Default choice
+    print("VALUE OF SYNTH INDEX NAME",synth_index_name)
+ 
 
     if (v := args.num_gen_label) is not None or \
            (v := args.num_gen_factor) is not None or \
@@ -177,7 +329,10 @@ def synth_latent_3(args,latent_object, synth_index_name):
         num_gen= latent_object.Labels.value_counts()
 
     for subtype in sorted(latent_object.Labels.unique()):  # here is the latent object in memory, from ONLY the trn object
-          
+        if (num_gen[subtype] < 2): # kindof a hack to avoid the sampling issues later on in the function
+            # might be better to just not sample at all
+            continue
+        print("SUBTYPE",num_gen[subtype])
         print(subtype)
         assert(num_gen[subtype]),"Labels given don't match labels in the TSV file."
         sub = latent_object[latent_object.Labels == subtype]
@@ -185,12 +340,14 @@ def synth_latent_3(args,latent_object, synth_index_name):
         synth_index = ['SYNTH-' + synth_index_name + '-' + jtem for jtem in [str(
             item).zfill(5) for item in list(range(synth_ndx_strt,
                                                   num_gen[subtype] + synth_ndx_strt))]]
+
         synth_sub_frame = pd.DataFrame(index = synth_index)
 
         synth_sub_frame.insert(0, 'Labels', sub.Labels[0])
 
         synth_dict = {}
         for synth_sample in synth_sub_frame.index:
+
             input_sample_set = sub.sample(args.num_synth_in)
             new_samp_vec = []
             for col in input_sample_set.iloc[:, 1:]:
@@ -210,6 +367,7 @@ def synth_latent_3(args,latent_object, synth_index_name):
 
 def run_gen_decoded(args):
 
+
     decoder = keras.models.load_model(args.decoder + ".decoder")
     encoder = keras.models.load_model(args.encoder + ".encoder")
 
@@ -223,13 +381,18 @@ def run_gen_decoded(args):
             # TODO what is the column name from prepared data, what does prepared data look like ? 
         else:
             Labels = input[args.column_label_name]
+            print("LABELS ",Labels)
+
 
         decoded = pd.DataFrame(decoder.predict(encoder.predict(input.iloc[:, 1:])),
                                 index = input.index, columns = input.iloc[:, 1:].columns)
 
+        print(decoded)
+        # SOMOETHING WRONG WITH THIS LINE ^^ print(input.iloc[:, 1:])
+
         decoded_labeled = pd.concat( [pd.DataFrame(Labels), decoded] , axis =1)
-        decoded_labeled.to_csv(args.out + input.index.name  + '_decoded_labeled.tsv', sep = '\t')
-        print(args.out+ input.index.name  +  '_decoded_labeled.tsv Generated')
+        decoded_labeled.to_csv(args.out, sep = '\t')
+        print(f"{args.out} Generated")
 
 def run_gen_synth(args):
     #load models
@@ -239,6 +402,9 @@ def run_gen_synth(args):
     #for each input tsv generate synthetic data
     for elem in args.inputs:
         input = pd.read_csv(args.inputs[args.inputs.index(elem)],sep='\t',index_col = 0)
+        input.index.name = args.inputs[args.inputs.index(elem)]
+        input.index.length = 50
+
         # another argument seperate file for finding column for seperate labels? optional argumenet
         if args.external_labels:
             Labels= pd.read_csv(args.external_labels)
@@ -246,8 +412,16 @@ def run_gen_synth(args):
         else:
             Labels = input[args.column_label_name]
 
+
+        #print("TYPE OF PREDICTION MATRIX ",input.iloc[:, 1:].dtypes)
+        #print("TYPE OF INDEX PARAM ",input.index.dtype)
+
+        print("ENCODER PREDICT ",encoder.predict(input.iloc[:, 1:]))
+    
         latent_object = pd.DataFrame(encoder.predict(input.iloc[:, 1:]),
                         index=input.index)
+
+
         
         latent_object.index.name = input.index.name
         latent_object = pd.concat( [pd.DataFrame(Labels), latent_object] , axis =1)
@@ -258,8 +432,8 @@ def run_gen_synth(args):
                                         index = synth_full_frame.index)], axis = 1)
         
         synth_lat_dec.columns = input.columns
-        synth_lat_dec.to_csv(args.out + input.index.name  +  '_synthetic_data.tsv', sep = '\t')
-        print(args.out + input.index.name  +  '_synthetic_data.tsv Generated')
+        synth_lat_dec.to_csv(args.out, sep = '\t')
+        print(f"{args.out} Generated")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
@@ -280,7 +454,23 @@ if __name__ == "__main__":
     train_parser.add_argument("--batch-size", type=int, default=50)
     train_parser.add_argument("--epochs", type=int, default=4)
     train_parser.add_argument("-e", "--exclude", nargs="*", default=[])
-    train_parser.add_argument("-o", "--out", default="model", required=True)
+    train_parser.add_argument("-o", "--out", default="model")
+
+
+    """
+    Build finely tuned model from input VAE model / or encoder/decoder pair and input TSV file
+    """
+    train_parser = subparsers.add_parser('train-fine-tune')
+    train_parser.set_defaults(func=train_fine_tune)
+
+    train_parser.add_argument("inputs")
+    train_parser.add_argument("-vae", default="model")
+    train_parser.add_argument("--learning-rate", type=float, default=0.0005)
+    train_parser.add_argument("--batch-size", type=int, default=50)
+    train_parser.add_argument("--latent-dim", type=int, default=50)
+    train_parser.add_argument("--epochs", type=int, default=4)
+    train_parser.add_argument("-e", "--exclude", nargs="*", default=[])
+    train_parser.add_argument("-o", "--out", default="model")
     
     """ 
     Generate synthetic TSV data from specified encoder/decoders and input TSV
@@ -293,7 +483,7 @@ if __name__ == "__main__":
     train_parser.add_argument("inputs", nargs="+")
     train_parser.add_argument("-enc", "--encoder", default="model")
     train_parser.add_argument("-dec", "--decoder", default="model")
-    train_parser.add_argument("-o", "--out", default="gen")
+    train_parser.add_argument("-o", "--out", default="gen.tsv")
 
     # must choose one of these three options 
     group = train_parser.add_mutually_exclusive_group()
@@ -313,14 +503,26 @@ if __name__ == "__main__":
     train_parser = subparsers.add_parser('gen_decoded')
     train_parser.set_defaults(func=run_gen_decoded)
 
-    #basic required args
+    #Decoder Args
     train_parser.add_argument("inputs", nargs="+")
     train_parser.add_argument("-enc", "--encoder", default="model")
     train_parser.add_argument("-dec", "--decoder", default="model")
-    train_parser.add_argument("-o", "--out", default="gen")
+    train_parser.add_argument("-o", "--out", default="DECODED.tsv")
 
     train_parser.add_argument("-label","--column-label-name",default="Labels")
     train_parser.add_argument("-exLabels","--external-labels")
+    
+    # Preproces args
+    train_parser = subparsers.add_parser('preprocess')
+    train_parser.set_defaults(func=preprocess)
+
+    train_parser.add_argument("inputs", nargs="+")
+    train_parser.add_argument("-file", "--label-file", default="brca_pam50")
+    train_parser.add_argument("-label", "--label-col", default="PAM50")
+    train_parser.add_argument("-t","--transpose",action='store_true')
+
+    train_parser.add_argument("-od", "--out-data", default="data.tsv")
+    train_parser.add_argument("-ol", "--out-labels", default="labels.tsv")
 
     args = parser.parse_args()
 
