@@ -31,17 +31,24 @@ z_mean_encoded = None
 z_log_var_encoded = None
 beta = None
 
+def compute_latent(x):
+    mu, sigma = x
+    batch = K.shape(mu)[0]
+    dim = K.shape(mu)[1]
+    eps = K.random_normal(shape=(batch, dim), mean=0., stddev=1.0 )
+    return mu + K.exp(sigma/2)*eps
+
+
 class CustomVariationalLayer(tf.keras.layers.Layer):
     """
     Define a custom layer
     """
-    def __init__(self, original_dim, **kwargs):
+    def __init__(self, **kwargs):
         self.is_placeholder = True
-        self.original_dim = original_dim
         super(CustomVariationalLayer, self).__init__(**kwargs)
 
     def vae_loss(self, x_input, x_decoded):
-        reconstruction_loss = self.original_dim * tf.keras.metrics.binary_crossentropy(x_input, x_decoded)
+        reconstruction_loss = original_dim * tf.keras.metrics.binary_crossentropy(x_input, x_decoded)
         kl_loss = - 0.5 * K.sum(1 + z_log_var_encoded - K.square(z_mean_encoded) - 
                                 K.exp(z_log_var_encoded), axis=-1)
         return K.mean(reconstruction_loss + (K.get_value(beta) * kl_loss))
@@ -73,6 +80,7 @@ def preprocess(args):
     syn_lst = list(samples_with_p50_labels.index) # Samples designated for synthesis
 
     for input in args.inputs:
+        print(f"reading {input} into memory")
         file_read_start = time.time()
         main_frame = pd.read_csv(input, header=0, sep='\t', index_col =0)
        
@@ -105,16 +113,24 @@ def preprocess(args):
         train_frame.insert(0, 'Labels', 'x_n')
         stack = pd.concat([train_frame, synth_labeled], axis = 0)
         print("SHAPE OF STACK",stack.shape)
-        k = 5
 
-
-        for columnName, columnData in stack.items():
-            if columnData.values.dtype != object:
-                unique, counts = numpy.unique(columnData.values, return_counts=True)
-                counts_dict = dict(zip(unique, counts))
-                print("VALUE OF COUNTS DICT ", counts_dict)
+        i=2
+        indxs = []
+        print("NUM COLS ",len(stack.axes[1]))
+        for elem in stack.columns:
+            col = stack.iloc[:, [i]]
+            unique, counts = numpy.unique(col.values, return_counts=True)
+            if(max(counts)*args.clean_up) > sum(counts):
+                indxs.append(stack.columns[i])
+                print("IN HERE ",i)
             
-                
+            if i == int(len(stack.axes[1]))-1:
+                break
+            i+=1
+            
+        stack.drop(indxs, axis=1,inplace=True)
+        print("NUM COLS ",len(stack.axes[1]))
+            
         features = stack[1:].mad().sort_values(ascending=False)[:5000].index
         #features = (stack.iloc[:, 1:] - stack.iloc[:, 1:].mean()).abs().mean().sort_values(ascending=False)[:500].index
         stack_5k = pd.concat([stack.Labels, stack.loc[:, features]], axis = 1)
@@ -138,23 +154,13 @@ def preprocess(args):
         X_synth_labeled = pd.concat([synth_5k.Labels, X_synth], axis = 1)
         X_synth_labeled.to_csv(args.out_labels, sep = '\t')
         print(f"FINISHED IN {time.time() - start} SECONDS")
-        
-    
- 
-
-
-def compute_latent(x):
-    mu, sigma = x
-    batch = K.shape(mu)[0]
-    dim = K.shape(mu)[1]
-    eps = K.random_normal(shape=(batch, dim), mean=0., stddev=1.0 )
-    return mu + K.exp(sigma/2)*eps
 
 
 def run_train(args):
     global z_mean_encoded
     global z_log_var_encoded
     global beta
+    global original_dim
 
     df = None
     for y in args.inputs:
@@ -165,12 +171,15 @@ def run_train(args):
             df = pd.concat([df, x])
 
     features = list( i for i in df.columns if i not in args.exclude )
-    feature_dim = len(features)
 
+    original_dim = len(features)
+    feature_dim = len(features)
     train_matrix = df[features]
 
     latent_dim = args.latent_dim
     learning_rate = args.learning_rate
+    pre_train_epochs = args.epochs
+    batch_size = args.batch_size
 
     encoder_inputs = tf.keras.Input(shape=(feature_dim,))
     z_mean_dense_linear = tf.keras.layers.Dense(
@@ -194,16 +203,20 @@ def run_train(args):
     kappa = 1
     beta = K.variable(0)
 
+    """
+    print("THE VALUE OF TRAIN MATRIX ",train_matrix)
+    print("EPOCHS ",type(pre_train_epochs)," ",pre_train_epochs)
+    print("BATCH_SIZE ",type(batch_size)," ",batch_size)
+    print("LEARNING_RATE ",type(learning_rate)," ",learning_rate)
+    print("LATENT_DIM ",type(latent_dim)," ",latent_dim)
+    """    
+
     adam = tf.keras.optimizers.Adam(learning_rate=learning_rate)
-    vae_layer = CustomVariationalLayer(feature_dim)([encoder_inputs, decoder_outputs])
+    vae_layer = CustomVariationalLayer()([encoder_inputs, decoder_outputs])
     vae = tf.keras.models.Model(encoder_inputs, vae_layer)
 
     vae.compile(optimizer=adam, loss=None, loss_weights=[beta])
 
-    pre_train_epochs = args.epochs
-    batch_size = args.batch_size
-
-    print("THE VALUE OF TRAIN MATRIX ",train_matrix)
     history = vae.fit(train_matrix,
                 epochs=pre_train_epochs,
                 batch_size=batch_size,
@@ -224,18 +237,23 @@ def run_train(args):
         handle.write(json.dumps({
             "features" : features
         }))
-
-
+    
     print("TRAIN MATRIX ",train_matrix)
 
     decoded = pd.DataFrame(decoder.predict(encoder.predict(train_matrix)),
                                 index = train_matrix.index, columns = train_matrix.columns)
 
     print("DECODED",decoded)
-
             
-    encoder.save(args.out + ".encoder")
-    decoder.save(args.out + ".decoder")
+
+    resultant = abs((train_matrix+1) -(decoded+1)) / (train_matrix+1)
+    print("ERROR MATRIX ",resultant)
+    print("ERROR MATRIX AVERAGE %",np.average(resultant)*100)
+
+    print("%",(abs(np.average(train_matrix) - np.average(decoded)) / np.average(train_matrix)) *100," MEAN ERROR")
+
+    encoder.save(args.out_enc)
+    decoder.save(args.out_dec)
 
     #vae_save = tf.keras.models.Model(encoder_inputs, vae_layer)
     #vae_save.save(args.out+ ".vae")
@@ -244,6 +262,7 @@ def run_train(args):
     #------------------------------------------------------------------------------------------
     # NEW ARGUMENT grouping train_fine_tune
     # given model + tsv generate new models
+    # TODO: fix below function 
     #_-----------------------------------------------------------------------------------------
 
 
@@ -270,7 +289,7 @@ def train_fine_tune(args):
     decoder_outputs = decoder_to_reconstruct(latent_space)
 
 
-    vae_layer = CustomVariationalLayer(feature_dim)([encoder_inputs, decoder_outputs])
+    vae_layer = CustomVariationalLayer()([encoder_inputs, decoder_outputs])
     vae = tf.keras.models.Model(encoder_inputs, vae_layer)
 
     vae.compile(optimizer=adam, loss=None, loss_weights=[beta])
@@ -368,8 +387,8 @@ def synth_latent_3(args,latent_object, synth_index_name):
 def run_gen_decoded(args):
 
 
-    decoder = keras.models.load_model(args.decoder + ".decoder")
-    encoder = keras.models.load_model(args.encoder + ".encoder")
+    decoder = keras.models.load_model(args.decoder)
+    encoder = keras.models.load_model(args.encoder)
 
     #for each input tsv generate synthetic data
     for elem in args.inputs:
@@ -396,8 +415,8 @@ def run_gen_decoded(args):
 
 def run_gen_synth(args):
     #load models
-    decoder = keras.models.load_model(args.decoder + ".decoder")
-    encoder = keras.models.load_model(args.encoder + ".encoder")
+    decoder = keras.models.load_model(args.decoder)
+    encoder = keras.models.load_model(args.encoder)
 
     #for each input tsv generate synthetic data
     for elem in args.inputs:
@@ -449,12 +468,13 @@ if __name__ == "__main__":
     train_parser.set_defaults(func=run_train)
 
     train_parser.add_argument("inputs", nargs="+")
-    train_parser.add_argument("--latent-dim", type=int, default=50)
+    train_parser.add_argument("--latent-dim", type=int, default=1000)
     train_parser.add_argument("--learning-rate", type=float, default=0.0005)
-    train_parser.add_argument("--batch-size", type=int, default=50)
-    train_parser.add_argument("--epochs", type=int, default=4)
+    train_parser.add_argument("--batch-size", type=int, default=500)
+    train_parser.add_argument("--epochs", type=int, default=15)
     train_parser.add_argument("-e", "--exclude", nargs="*", default=[])
-    train_parser.add_argument("-o", "--out", default="model")
+    train_parser.add_argument("-oc", "--out_enc", default="model.encoder")
+    train_parser.add_argument("-od", "--out_dec", default="model.decoder")
 
 
     """
@@ -467,10 +487,12 @@ if __name__ == "__main__":
     train_parser.add_argument("-vae", default="model")
     train_parser.add_argument("--learning-rate", type=float, default=0.0005)
     train_parser.add_argument("--batch-size", type=int, default=50)
-    train_parser.add_argument("--latent-dim", type=int, default=50)
+    train_parser.add_argument("--latent-dim", type=int, default=250)
     train_parser.add_argument("--epochs", type=int, default=4)
     train_parser.add_argument("-e", "--exclude", nargs="*", default=[])
-    train_parser.add_argument("-o", "--out", default="model")
+    train_parser.add_argument("-oc", "--out_enc", default="model.encoder")
+    train_parser.add_argument("-od", "--out_dec", default="model.decoder")
+
     
     """ 
     Generate synthetic TSV data from specified encoder/decoders and input TSV
@@ -481,8 +503,8 @@ if __name__ == "__main__":
 
     #basic required args
     train_parser.add_argument("inputs", nargs="+")
-    train_parser.add_argument("-enc", "--encoder", default="model")
-    train_parser.add_argument("-dec", "--decoder", default="model")
+    train_parser.add_argument("-enc", "--encoder", default="model.encoder")
+    train_parser.add_argument("-dec", "--decoder", default="model.decoder")
     train_parser.add_argument("-o", "--out", default="gen.tsv")
 
     # must choose one of these three options 
@@ -504,9 +526,9 @@ if __name__ == "__main__":
     train_parser.set_defaults(func=run_gen_decoded)
 
     #Decoder Args
-    train_parser.add_argument("inputs", nargs="+")
-    train_parser.add_argument("-enc", "--encoder", default="model")
-    train_parser.add_argument("-dec", "--decoder", default="model")
+    train_parser.add_argument("inputs", nargs="+", help='the actual fiels that you want to run through the decoder')
+    train_parser.add_argument("-enc", "--encoder", default="model.encoder", help ='the name of the encoder ')
+    train_parser.add_argument("-dec", "--decoder", default="model.decoder")
     train_parser.add_argument("-o", "--out", default="DECODED.tsv")
 
     train_parser.add_argument("-label","--column-label-name",default="Labels")
@@ -520,6 +542,8 @@ if __name__ == "__main__":
     train_parser.add_argument("-file", "--label-file", default="brca_pam50")
     train_parser.add_argument("-label", "--label-col", default="PAM50")
     train_parser.add_argument("-t","--transpose",action='store_true')
+    train_parser.add_argument("-c","--clean-up",type =int, default = 8, help='delete a column if it has "x" times as many other data as zeros, ex at 4 if the was \
+        3.9 times as many other data as 0s the column would be deleted')
 
     train_parser.add_argument("-od", "--out-data", default="data.tsv")
     train_parser.add_argument("-ol", "--out-labels", default="labels.tsv")

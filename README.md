@@ -32,6 +32,11 @@ the labels file stayed its default download name brca_pam50
 --label-col -> the name of the column that holds the labels to generate synthentic samples for
 
 ## Run the below command to train an encoder/decoder from formatted data
+
+NOTE you will have to tune your dataset with optional hyperparamaters arguments 
+to get the decoded data to be in the same ballpark as the data you use to train your models.
+You can measure how much error you have between decoded and input data by watching the terminal stdout error metrics. 
+
 ```
 ./synthesis train data.tsv --out model  -e Labels
 ```
