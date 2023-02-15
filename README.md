@@ -71,6 +71,25 @@ You can measure how much error you have between decoded and input data by watchi
 provide an encoder and decoder Keras style model file with a datafile. Should be in the 
 same format as the datafile that is created when the xena dataset is preprocessed
 
+## R Heat Map Setup
+Note: you need to have R installed on your computer for this to work you can install R with
+'''
+brew install r
+'''
+
+Also, when the program runs for the first time it will take a few  minutes to download and install all of the required packages from the program. 
+The heatmap package that the program is build on is from the bioconductor package manager. More information for how to install this library can be found here:
+
+https://bioconductor.org/packages/release/bioc/html/ComplexHeatmap.html
+
+
+## R Heat Map Command 
+```
+Rscript HeatMap.R -f data_copy.tsv  -o BIGPDF.pdf -t
+```
+-f --> the file that is read from, in the same format as the other files of this application depend on,
+-o --> The name of the heatmap image file that will be saved
+-t --> transpose the entire matrix. Do this if the samples are on the X axis instead of the Y axis and the genes are on the Y axis instead of the X axis. 
 ## Run the below command to get a UMAP of two Files
 These files could be synth generations/decoded samples/ raw data.
 

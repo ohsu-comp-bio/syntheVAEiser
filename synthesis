@@ -139,6 +139,8 @@ def preprocess(args):
         print("train_5k.Labels", train_5k.Labels)
         print("train_5k.LabelsShape", train_5k.Labels.shape)
         print("X_trainShape", X_train.shape)
+        print("X_TRAIN TOO",X_train)
+
         X_train_labeled = pd.concat([train_5k.Labels, X_train], axis=1)
         X_train_labeled.to_csv(args.out_data, sep='\t')
         synth_max_col_vals = synth_5k.iloc[:, 1:].max()
@@ -146,7 +148,6 @@ def preprocess(args):
         X_synth_labeled = pd.concat([synth_5k.Labels, X_synth], axis=1)
         X_synth_labeled.to_csv(args.out_labels, sep='\t')
         print(f"FINISHED IN {time.time() - start} SECONDS")
-
 
 def run_train(args):
     global z_mean_encoded
@@ -463,7 +464,7 @@ if __name__ == "__main__":
     train_parser.add_argument("--latent-dim", type=int, default=250)
     train_parser.add_argument("--learning-rate", type=float, default=0.0005)
     train_parser.add_argument("--batch-size", type=int, default=10)
-    train_parser.add_argument("--epochs", type=int, default=50)
+    train_parser.add_argument("--epochs", type=int, default=15)
     train_parser.add_argument("-e", "--exclude", nargs="*", default=[])
     train_parser.add_argument("-oc", "--out_enc", default="model.encoder")
     train_parser.add_argument("-od", "--out_dec", default="model.decoder")
