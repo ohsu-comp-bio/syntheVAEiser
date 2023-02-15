@@ -28,8 +28,6 @@ if (isTRUE(opt$transpose)){
 }
 
 dim(expr)
-expr_synth = expr_synth[0:40,]
-
 dim(expr_synth)
 
 #expr <- expr[order(expr$Labels),] 
@@ -87,7 +85,7 @@ ult = t(apply(ult, 1, function(x) {
 ht_list = 
     #  row_split = Labels
     Heatmap(ult, col = colorRamp2(c(-1.5, 0, 1.5), c("blue", "white", "red")), 
-    name = "scaled_expr", column_title = qq("relative expression for @{nrow(expr)} samples and @{ncol(expr)} genes"),
+    name = "scaled_expr", column_title = qq("relative expression for @{nrow(expr)} samples and @{ncol(expr)-2} genes"),
     show_column_names = FALSE, width = unit(8, "cm"),
     heatmap_legend_param = list(title = "Scaled expr"),show_row_names = FALSE, use_raster=TRUE) +   
 

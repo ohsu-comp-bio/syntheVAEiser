@@ -75,7 +75,7 @@ def preprocess(args):
     syn_lst = list(samples_with_p50_labels.index)
 
     for input in args.inputs:
-        print(f"reading {input} into memory")
+        print(f"reading {input} into memory. This could take a couple of minutes")
         file_read_start = time.time()
         main_frame = pd.read_csv(input, header=0, sep='\t', index_col=0)
 
@@ -331,6 +331,38 @@ def synth_latent_3(args, latent_object, synth_index_name):
           str(sum(num_gen))+' new samples generated')
     return (synth_full_frame)
 
+def train_fine_tune(args):
+    global z_mean_encoded
+    global z_log_var_encoded
+    global beta
+
+    df = pd.read_csv(args.inputs, sep="\t", index_col=0)
+    features = list( i for i in df.columns if i not in args.exclude )
+    train_matrix = df[features]
+    adam = tf.keras.optimizers.Adam(learning_rate=args.learning_rate)
+    feature_dim = len(features)
+    encoder_inputs = tf.keras.Input(shape=(feature_dim,))
+
+    latent_dim = args.latent_dim
+    latent_space = tf.keras.layers.Lambda(
+        compute_latent, output_shape=(
+            latent_dim,), name="latent_space")([z_mean_encoded, z_log_var_encoded])
+
+    decoder_to_reconstruct = tf.keras.layers.Dense(
+        feature_dim, kernel_initializer='glorot_uniform', activation='sigmoid')
+    decoder_outputs = decoder_to_reconstruct(latent_space)
+
+    vae_layer = CustomVariationalLayer()([encoder_inputs, decoder_outputs])
+    vae = tf.keras.models.Model(encoder_inputs, vae_layer)
+    vae.compile(optimizer=adam, loss=None, loss_weights=[beta])
+
+
+    pre_train_epochs = args.epochs
+    batch_size = args.batch_size
+    kappa = 1
+
+  
+
 
 def run_gen_decoded(args):
 
@@ -463,12 +495,28 @@ if __name__ == "__main__":
     train_parser.add_argument("inputs", nargs="+")
     train_parser.add_argument("--latent-dim", type=int, default=250)
     train_parser.add_argument("--learning-rate", type=float, default=0.0005)
-    train_parser.add_argument("--batch-size", type=int, default=10)
-    train_parser.add_argument("--epochs", type=int, default=15)
+    train_parser.add_argument("--batch-size", type=int, default=25)
+    train_parser.add_argument("--epochs", type=int, default=30)
     train_parser.add_argument("-e", "--exclude", nargs="*", default=[])
     train_parser.add_argument("-oc", "--out_enc", default="model.encoder")
     train_parser.add_argument("-od", "--out_dec", default="model.decoder")
     train_parser.add_argument("-in", "--info", default="model.info")
+
+    """
+    Build finely tuned model from input VAE model / or encoder/decoder pair and input TSV file
+    """
+    train_parser = subparsers.add_parser('train-fine-tune')
+    train_parser.set_defaults(func=train_fine_tune)
+
+    train_parser.add_argument("inputs")
+    train_parser.add_argument("-vae", default="model")
+    train_parser.add_argument("--learning-rate", type=float, default=0.0005)
+    train_parser.add_argument("--batch-size", type=int, default=50)
+    train_parser.add_argument("--latent-dim", type=int, default=250)
+    train_parser.add_argument("--epochs", type=int, default=30)
+    train_parser.add_argument("-e", "--exclude", nargs="*", default=[])
+    train_parser.add_argument("-oc", "--out_enc", default="model.encoder")
+    train_parser.add_argument("-od", "--out_dec", default="model.decoder")
 
     """
     Generate synthetic TSV data from specified encoder/decoders and input TSV
@@ -546,7 +594,7 @@ if __name__ == "__main__":
     train_parser.add_argument("-file", "--label-file", default=None)
     train_parser.add_argument("-label", "--label-col", default=None)
     train_parser.add_argument("-t", "--transpose", action='store_true')
-    train_parser.add_argument("-c", "--clean-up", type=int, default=8, help='delete a column if it has "x" times as many other data as zeros, ex at 4 if the was \
+    train_parser.add_argument("-c", "--clean-up", type=int, default=75, help='delete a column if it has "x" times as many other data as zeros, ex at 4 if the was \
         3.9 times as many other data as 0s the column would be deleted')
 
     train_parser.add_argument("-od", "--out-data", default="data.tsv")
