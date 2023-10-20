@@ -10,10 +10,8 @@ README
     \__         |_/
        \_______/
              
-This codebase, corresponding to the paper 'Augmenting traditional ML with VAE-based gene expression sample generation for improved prediction of cancer molecular subtypes' contains:
+Codebase corresponding 'Augmenting traditional ML with VAE-based gene expression sample generation for improved prediction of cancer molecular subtypes'  
 
-    Categorically labeled gene expression data
-    Synthetic data generation code files:
-        Notebook format
-        Script format
- 
+Input data structure:
+    Categorically labeled, tabular gene expression
+    Samples as rows, features as columns
