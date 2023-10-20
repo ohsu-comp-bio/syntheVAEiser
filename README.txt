@@ -10,7 +10,7 @@ README
     \__         |_/
        \_______/
              
-Codebase corresponding 'Augmenting traditional ML with VAE-based gene expression sample generation for improved prediction of cancer molecular subtypes'  
+Codebase corresponding to 'Augmenting traditional ML with VAE-based gene expression sample generation for improved prediction of cancer molecular subtypes'  
 
 Input data structure:
     Categorically labeled, tabular gene expression
