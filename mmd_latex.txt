@@ -1,0 +1,33 @@
+\documentclass{article}
+\usepackage{algorithm2e}
+\begin{document}
+\RestyleAlgo{ruled}
+\SetKwComment{Comment}{/* }{ */}
+
+\setcounter{algocf}{2} % Set the algorithm counter to 2 so that the next algorithm gets numbered as 3
+\begin{algorithm}
+\caption{Compute MMD}\label{alg:three}
+Given two sets of samples, $gexp\_1$ and $gexp\_2$, and a kernel parameter $\gamma$:\\
+
+\noindent\rule{4cm}{0.05pt}\\
+
+$K\_XX \gets$ rbf\_kernel($gexp\_1$, $gexp\_1$, $\gamma$)\\
+$K\_XY \gets$ rbf\_kernel($gexp\_1$, $gexp\_2$, $\gamma$)\\
+$K\_YY \gets$ rbf\_kernel($gexp\_2$, $gexp\_2$, $\gamma$)\\
+
+$m \gets$ number of rows in $gexp\_1$\\
+$n \gets$ number of rows in $gexp\_2$\\
+
+$mmd \gets (\sum(K\_XX) - \text{trace}(K\_XX)) / (m * (m - 1))$\\
+$mmd \mathrel{{+}{=}} (\sum(K\_YY) - \text{trace}(K\_YY)) / (n * (n - 1))$\\
+$mmd \mathrel{{-}{=}} 2 * \sum(K\_XY) / (m * n)$\\
+
+$mmd \gets \max(mmd, 0)$\\
+$mmd \gets \sqrt{mmd}$\\
+
+\noindent\rule{4cm}{0.05pt}\\
+
+\Return $mmd$
+\end{algorithm}
+
+\end{document}
