@@ -2,7 +2,7 @@ README - Synthetic gene expression sample generation
 
     @@@@@   @@@@@
  @@@@@@@@@@@@@@@@@@@
-@@ SYNTHESIS GENIE @@
+@@ SyntheVAEiser @@
  @@@@@@@@@@@@@@@@@@@
   @@@@        
    @@   ___^___   __
