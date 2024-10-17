@@ -1,15 +1,5 @@
-README - Synthetic gene expression sample generation
-
-    @@@@@   @@@@@
- @@@@@@@@@@@@@@@@@@@
-@@ SyntheVAEiser @@
- @@@@@@@@@@@@@@@@@@@
-  @@@@        
-   @@   ___^___   __
-   \ \_/       \_/ /
-    \__         |_/
-       \_______/
-             
+SyntheVAEiser: Synthetic gene expression sample generation
+        
 Codebase corresponding to 'Augmenting traditional ML with VAE-based gene expression sample generation for improved prediction of cancer molecular subtypes'  
 
 Data structure for input to model:
